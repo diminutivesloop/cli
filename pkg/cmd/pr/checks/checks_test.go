@@ -2,6 +2,7 @@ package checks
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -262,6 +263,58 @@ func TestChecksRun_web(t *testing.T) {
 			assert.Equal(t, tc.wantStderr, stderr.String())
 			reg.Verify(t)
 			browser.Verify(t, tc.wantBrowse)
+		})
+	}
+}
+
+func TestChecksRun_Pagination(t *testing.T) {
+	tests := []struct {
+		name             string
+		selectorArg      string
+		queryName        string
+		firstPageFixture string
+	}{
+		{
+			name:             "by number",
+			selectorArg:      "123",
+			queryName:        "PullRequestByNumber",
+			firstPageFixture: "./fixtures/pageByNum.json",
+		},
+		{
+			name:             "by branch",
+			selectorArg:      "branch-name",
+			queryName:        "PullRequestForBranch",
+			firstPageFixture: "./fixtures/pageForBranch.json",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			io, _, stdout, _ := iostreams.Test()
+			io.SetStdoutTTY(true)
+
+			opts := &ChecksOptions{
+				IO: io,
+				BaseRepo: func() (ghrepo.Interface, error) {
+					return ghrepo.New("OWNER", "REPO"), nil
+				},
+				SelectorArg: tc.selectorArg,
+			}
+
+			reg := &httpmock.Registry{}
+			defer reg.Verify(t)
+
+			reg.Register(httpmock.GraphQL(fmt.Sprintf(`query %s\b`, tc.queryName)), httpmock.FileResponse(tc.firstPageFixture))
+			reg.Register(httpmock.GraphQL(`query PullRequestStatusChecks\b`), httpmock.FileResponse("./fixtures/page.json"))
+			reg.Register(httpmock.GraphQL(`query PullRequestStatusChecks\b`), httpmock.FileResponse("./fixtures/pageEnd.json"))
+
+			opts.HttpClient = func() (*http.Client, error) {
+				return &http.Client{Transport: reg}, nil
+			}
+
+			err := checksRun(opts)
+			assert.NoError(t, err)
+
+			assert.Equal(t, "All checks were successful\n0 failing, 9 successful, and 0 pending checks\n\n✓  awesome tests  1m26s  sweet link\n✓  awesome tests  1m26s  sweet link\n✓  awesome tests  1m26s  sweet link\n✓  cool tests     1m26s  sweet link\n✓  cool tests     1m26s  sweet link\n✓  cool tests     1m26s  sweet link\n✓  rad tests      1m26s  sweet link\n✓  rad tests      1m26s  sweet link\n✓  rad tests      1m26s  sweet link\n", stdout.String())
 		})
 	}
 }

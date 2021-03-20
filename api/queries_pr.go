@@ -80,22 +80,7 @@ type PullRequest struct {
 		Nodes      []struct {
 			Commit struct {
 				Oid               string
-				StatusCheckRollup struct {
-					Contexts struct {
-						Nodes []struct {
-							TypeName    string    `json:"__typename"`
-							Name        string    `json:"name"`
-							Context     string    `json:"context,omitempty"`
-							State       string    `json:"state,omitempty"`
-							Status      string    `json:"status"`
-							Conclusion  string    `json:"conclusion"`
-							StartedAt   time.Time `json:"startedAt"`
-							CompletedAt time.Time `json:"completedAt"`
-							DetailsURL  string    `json:"detailsUrl"`
-							TargetURL   string    `json:"targetUrl,omitempty"`
-						}
-					}
-				}
+				StatusCheckRollup statusCheckRollup
 			}
 		}
 	}
@@ -117,6 +102,27 @@ type PullRequestFile struct {
 	Path      string `json:"path"`
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
+}
+
+type statusCheckRollup struct {
+	Contexts struct {
+		PageInfo struct {
+			EndCursor   string
+			HasNextPage bool
+		}
+		Nodes []struct {
+			TypeName    string    `json:"__typename"`
+			Name        string    `json:"name"`
+			Context     string    `json:"context,omitempty"`
+			State       string    `json:"state,omitempty"`
+			Status      string    `json:"status"`
+			Conclusion  string    `json:"conclusion"`
+			StartedAt   time.Time `json:"startedAt"`
+			CompletedAt time.Time `json:"completedAt"`
+			DetailsURL  string    `json:"detailsUrl"`
+			TargetURL   string    `json:"targetUrl,omitempty"`
+		}
+	}
 }
 
 type ReviewRequests struct {
@@ -575,7 +581,11 @@ func prCommitsFragment(httpClient *http.Client, hostname string) (string, error)
 			commit {
 				oid
 				statusCheckRollup {
-					contexts(last: 100) {
+					contexts(first: 100, after: $statusCheckCursor) {
+						pageInfo {
+							endCursor
+							hasNextPage
+						}
 						nodes {
 							...on StatusContext {
 								context
@@ -612,7 +622,7 @@ func PullRequestByNumber(client *Client, repo ghrepo.Interface, number int) (*Pu
 	}
 
 	query := `
-	query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {
+	query PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!, $statusCheckCursor: String) {
 		repository(owner: $owner, name: $repo) {
 			pullRequest(number: $pr_number) {
 				id
@@ -698,6 +708,20 @@ func PullRequestByNumber(client *Client, repo ghrepo.Interface, number int) (*Pu
 		return nil, err
 	}
 
+	// fetch additional status checks
+	if resp.Repository.PullRequest.Commits.Nodes != nil && len(resp.Repository.PullRequest.Commits.Nodes) > 0 {
+		statusCheckContexts := &resp.Repository.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts
+		pageInfo := statusCheckContexts.PageInfo
+		for pageInfo.HasNextPage {
+			moreChecks, err := statusChecksForPR(client, repo, number, pageInfo.EndCursor)
+			if err != nil {
+				return nil, err
+			}
+			statusCheckContexts.Nodes = append(statusCheckContexts.Nodes, moreChecks.Contexts.Nodes...)
+			pageInfo = moreChecks.Contexts.PageInfo
+		}
+	}
+
 	return &resp.Repository.PullRequest, nil
 }
 
@@ -716,7 +740,7 @@ func PullRequestForBranch(client *Client, repo ghrepo.Interface, baseBranch, hea
 	}
 
 	query := `
-	query PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!]) {
+	query PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!], $statusCheckCursor: String) {
 		repository(owner: $owner, name: $repo) {
 			pullRequests(headRefName: $headRefName, states: $states, first: 30, orderBy: { field: CREATED_AT, direction: DESC }) {
 				nodes {
@@ -814,11 +838,70 @@ func PullRequestForBranch(client *Client, repo ghrepo.Interface, baseBranch, hea
 
 	for _, pr := range prs {
 		if pr.HeadLabel() == headBranch && (baseBranch == "" || pr.BaseRefName == baseBranch) {
+			// fetch additional status checks
+			if pr.Commits.Nodes != nil && len(pr.Commits.Nodes) > 0 {
+				statusCheckContexts := &pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts
+				pageInfo := statusCheckContexts.PageInfo
+				for pageInfo.HasNextPage {
+					moreChecks, err := statusChecksForPR(client, repo, pr.Number, pageInfo.EndCursor)
+					if err != nil {
+						return nil, err
+					}
+					statusCheckContexts.Nodes = append(statusCheckContexts.Nodes, moreChecks.Contexts.Nodes...)
+					pageInfo = moreChecks.Contexts.PageInfo
+				}
+			}
+
 			return &pr, nil
 		}
 	}
 
 	return nil, &NotFoundError{fmt.Errorf("no pull requests found for branch %q", headBranch)}
+}
+
+func statusChecksForPR(client *Client, repo ghrepo.Interface, number int, cursor string) (*statusCheckRollup, error) {
+	type response struct {
+		Repository struct {
+			PullRequest struct {
+				Commits struct {
+					Nodes []struct {
+						Commit struct {
+							StatusCheckRollup statusCheckRollup
+						}
+					}
+				}
+			}
+		}
+	}
+
+	statusesFragment, err := prCommitsFragment(client.http, repo.RepoHost())
+	if err != nil {
+		return nil, err
+	}
+
+	query := `
+	query PullRequestStatusChecks($owner: String!, $repo: String!, $pr_number: Int!, $statusCheckCursor: String) {
+		repository(owner: $owner, name: $repo) {
+			pullRequest(number: $pr_number) {
+				` + statusesFragment + `
+			}
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"owner":             repo.RepoOwner(),
+		"repo":              repo.RepoName(),
+		"pr_number":         number,
+		"statusCheckCursor": cursor,
+	}
+
+	var resp response
+	err = client.GraphQL(repo.RepoHost(), query, variables, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return &resp.Repository.PullRequest.Commits.Nodes[0].Commit.StatusCheckRollup, nil
 }
 
 // sortPullRequestsByState sorts a PullRequest slice by open-first

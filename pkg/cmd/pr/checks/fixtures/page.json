@@ -1,0 +1,46 @@
+{ "data": { "repository": { "pullRequest": { 
+  "number": 123, 
+  "headRefName": "branch-name",
+  "commits": { 
+    "nodes": [
+      {
+        "commit": {
+          "oid": "abc",
+          "statusCheckRollup": {
+            "contexts": {
+              "pageInfo": {
+                "endCursor": "NOP",
+                "hasNextPage": true
+              },
+              "nodes": [
+                {
+                  "conclusion": "SUCCESS",
+                  "status": "COMPLETED",
+                  "name": "cool tests",
+                  "completedAt": "2020-08-27T19:00:12Z",
+                  "startedAt": "2020-08-27T18:58:46Z",
+                  "detailsUrl": "sweet link"
+                },
+                {
+                  "conclusion": "SUCCESS",
+                  "status": "COMPLETED",
+                  "name": "rad tests",
+                  "completedAt": "2020-08-27T19:00:12Z",
+                  "startedAt": "2020-08-27T18:58:46Z",
+                  "detailsUrl": "sweet link"
+                },
+                {
+                  "conclusion": "SUCCESS",
+                  "status": "COMPLETED",
+                  "name": "awesome tests",
+                  "completedAt": "2020-08-27T19:00:12Z",
+                  "startedAt": "2020-08-27T18:58:46Z",
+                  "detailsUrl": "sweet link"
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]} 
+} } } }
